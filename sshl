@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""sshl — list the hosts in your ~/.ssh/config, the way you would want to read them.
+
+    sshl              every host, grouped by the config's own section headers
+    sshl prod         only hosts whose alias, address or section contains "prod"
+    sshl -F FILE      read another config file
+
+Hosts are grouped by section (a comment line right after a ##### rule) and,
+inside a section, sorted by their numeric alias (a VM ID such as "502"). A host
+with no number sits beside the host that shares its address; the rest come
+last, by IP. Like ssh itself, the first value of a setting wins in a Host block.
+"""
+import glob
+import os
+import re
+import sys
+
+__version__ = "1.0.0"
+
+DEFAULT_CONFIG = os.path.expanduser("~/.ssh/config")
+RULE = re.compile(r"^#{2,}\s*$")
+
+
+def paint(code, text, tty):
+    return f"\033[{code}m{text}\033[0m" if tty else text
+
+
+def read_lines(path, seen):
+    """The config's lines, with every Include expanded in place (once per file)."""
+    path = os.path.abspath(os.path.expanduser(path))
+    if path in seen or not os.path.isfile(path):
+        return []
+    seen.add(path)
+    with open(path, encoding="utf-8") as fh:
+        raw = fh.read().splitlines()
+    out = []
+    base = os.path.dirname(path)
+    for line in raw:
+        stripped = line.strip()
+        key, _, value = stripped.partition(" ")
+        if key.lower() == "include" and value:
+            for pattern in value.split():
+                pattern = os.path.expanduser(pattern)
+                if not os.path.isabs(pattern):
+                    pattern = os.path.join(base, pattern)
+                for match in sorted(glob.glob(pattern)):
+                    out.extend(read_lines(match, seen))
+            continue
+        out.append(line)
+    return out
+
+
+def parse(lines):
+    hosts, section, current = [], "", None
+    for i, raw in enumerate(lines):
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            prev = lines[i - 1].strip() if i else ""
+            text = line.lstrip("#").strip()
+            if RULE.match(prev) and text:
+                section = text
+            continue
+        parts = re.split(r"\s*=\s*|\s+", line, maxsplit=1)
+        key = parts[0].lower()
+        value = parts[1].strip() if len(parts) > 1 else ""
+        if key == "host":
+            names = value.split()
+            if any("*" in n or "?" in n or n.startswith("!") for n in names):
+                current = None
+                continue
+            current = {"names": names, "section": section}
+            hosts.append(current)
+        elif key == "match":
+            current = None
+        elif current is not None and key not in current:
+            current[key] = value
+    return hosts
+
+
+def vm_id(host):
+    ids = [n for n in host["names"] if n.isdigit()]
+    return int(ids[0]) if ids else None
+
+
+def ip_key(addr):
+    parts = addr.split(".")
+    if len(parts) == 4 and all(p.isdigit() for p in parts):
+        return (0, tuple(int(p) for p in parts), "")
+    return (1, (), addr)
+
+
+def via(host):
+    if "proxyjump" in host:
+        return "jump " + host["proxyjump"]
+    proxy = host.get("proxycommand", "")
+    if "cloudflared" in proxy:
+        return "cloudflared"
+    return "proxy" if proxy else ""
+
+
+def order(hosts):
+    sections = {}
+    for h in hosts:
+        sections.setdefault(h["section"], len(sections))
+    by_addr = {h.get("hostname"): vm_id(h) for h in hosts if vm_id(h) is not None}
+
+    def key(h):
+        own = vm_id(h)
+        vid = own if own is not None else by_addr.get(h.get("hostname"))
+        return (sections[h["section"]], vid is None, vid or 0, own is None, ip_key(h.get("hostname", "")))
+
+    return sorted(hosts, key=key)
+
+
+def render(hosts, tty=False):
+    rows = [(" ".join(h["names"]), h.get("hostname", "—"), h.get("user", ""), via(h), h["section"]) for h in hosts]
+    head = ("ALIASES", "ADDRESS", "USER", "VIA")
+    w0 = max(len(head[0]), *(len(r[0]) for r in rows))
+    w1 = max(len(head[1]), *(len(r[1]) for r in rows))
+    w2 = max(len(head[2]), *(len(r[2]) for r in rows))
+    out = ["", paint("2", f"  {head[0].ljust(w0)}  {head[1].ljust(w1)}  {head[2].ljust(w2)}  {head[3]}", tty)]
+    section = None
+    for name, addr, user, how, sec in rows:
+        if sec != section:
+            section = sec
+            out += ["", paint("1;36", sec or "(no section)", tty)]
+        line = "  " + paint("1", name.ljust(w0), tty) + "  " + addr.ljust(w1) + "  " + paint("2", user.ljust(w2), tty)
+        if how:
+            line += "  " + paint("33", how, tty)
+        out.append(line.rstrip())
+    out += ["", paint("2", f"{len(rows)} hosts · connect with: ssh <alias>", tty)]
+    return "\n".join(out)
+
+
+def main(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    if args and args[0] in ("-V", "--version"):
+        print(f"sshl {__version__}")
+        return 0
+    config = os.environ.get("SSHL_CONFIG", DEFAULT_CONFIG)
+    if args and args[0] == "-F":
+        if len(args) < 2:
+            print("sshl: -F needs a file", file=sys.stderr)
+            return 2
+        config, args = args[1], args[2:]
+    if not os.path.isfile(os.path.expanduser(config)):
+        print(f"sshl: no config at {config}", file=sys.stderr)
+        return 1
+    hosts = parse(read_lines(config, set()))
+    wanted = " ".join(args).lower()
+    if wanted:
+        hosts = [h for h in hosts if wanted in " ".join(h["names"] + [h.get("hostname", ""), h["section"]]).lower()]
+    if not hosts:
+        print(f"sshl: no host matches '{wanted}'" if wanted else "sshl: no hosts in the config", file=sys.stderr)
+        return 1
+    print(render(order(hosts), tty=sys.stdout.isatty() and "NO_COLOR" not in os.environ))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

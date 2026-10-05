@@ -1,0 +1,38 @@
+Host *
+    ServerAliveInterval 60
+
+##################################################################################
+## Home lab
+
+Host proxmox pve 100
+    HostName 192.168.10.10
+    User root
+
+Host pve-remote
+    HostName ssh.example.com
+    User root
+    ProxyCommand cloudflared access ssh --hostname %h
+
+Host nas 120
+    HostName 192.168.10.20
+    User admin
+
+Host pve-admin
+    HostName 192.168.10.10
+    User root
+
+Host web 110
+    HostName 192.168.20.5
+    User deploy
+    ProxyJump pve
+
+##################################################################################
+## Work
+
+Host staging 201
+    HostName 10.0.3.5
+    User app
+    ProxyJump bastion
+    User ignored-second-value
+
+Include work.d/*.conf
