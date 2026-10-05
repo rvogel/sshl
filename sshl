@@ -130,7 +130,7 @@ def render(hosts, tty=False):
         if how:
             line += "  " + paint("33", how, tty)
         out.append(line.rstrip())
-    out += ["", paint("2", f"{len(rows)} hosts · connect with: ssh <alias>", tty)]
+    out += ["", paint("2", f"{len(rows)} host{'' if len(rows) == 1 else 's'} · connect with: ssh <alias>", tty)]
     return "\n".join(out)
 
 

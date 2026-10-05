@@ -2,6 +2,8 @@
 
 **List the hosts in your `~/.ssh/config` — every alias, address, user and how each one is reached — in one readable table.**
 
+![sshl listing a config, then filtering it by section and by subnet](docs/demo.gif)
+
 You have twenty hosts, three jump boxes and a Cloudflare tunnel, and you can never remember whether it was `ssh web` or `ssh web-01`. `sshl` reads your SSH config and shows you.
 
 ```
@@ -81,6 +83,8 @@ Colour is used only on a terminal. Set `NO_COLOR` to turn it off.
 ```sh
 python3 -m unittest discover -s tests
 ```
+
+The demo GIF is built from the test fixture (all hosts and addresses are made up) with `python3 docs/make_demo.py` — it needs Google Chrome and ffmpeg.
 
 ## License
 
